@@ -1,0 +1,52 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    container_name: wildlife_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: wildlife
+      POSTGRES_PASSWORD: wildlife_pass
+      POSTGRES_DB: wildlife_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wildlife -d wildlife_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mongo:
+    image: mongo:7
+    container_name: wildlife_mongo
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: wildlife
+      MONGO_INITDB_ROOT_PASSWORD: wildlife_pass
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  backend:
+    build: ./backend
+    container_name: wildlife_backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mongo:
+        condition: service_started
+    volumes:
+      - ./backend:/app
+
+volumes:
+  postgres_data:
+  mongo_data:
