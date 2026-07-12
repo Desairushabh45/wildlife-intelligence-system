@@ -95,10 +95,14 @@ class Observation(Base):
     survey_id = Column(UUID(as_uuid=False), ForeignKey("surveys.id"), nullable=False)
     observation_type = Column(Enum(ObservationType), nullable=False)
     file_path = Column(String, nullable=False)
+    mongo_metadata_id = Column(String, nullable=True)
+    notes = Column(Text, nullable=True)
+    uploaded_by = Column(UUID(as_uuid=False), ForeignKey("users.id"), nullable=False)
     captured_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     survey = relationship("Survey", back_populates="observations")
+    uploaded_by_user = relationship("User")
     detections = relationship("Detection", back_populates="observation", cascade="all, delete-orphan")
 
 

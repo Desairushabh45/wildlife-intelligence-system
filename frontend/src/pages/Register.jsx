@@ -38,45 +38,45 @@ function Register() {
   }
 
   return (
-    <main className="grid min-h-screen bg-white lg:grid-cols-[0.95fr_1fr]">
+    <main className="grid min-h-screen bg-white dark:bg-slate-950 lg:grid-cols-[0.95fr_1fr]">
       <section className="hidden min-h-screen bg-slate-900 lg:block">
         <img className="h-full w-full object-cover" src={heroImage} alt="Forest monitoring camera trap" />
       </section>
       <section className="flex items-center justify-center px-6 py-10">
         <div className="w-full max-w-md">
-          <p className="text-sm font-semibold uppercase tracking-wide text-canopy">Wildlife Population Intelligence System</p>
-          <h1 className="mt-3 text-3xl font-semibold text-ink">Register</h1>
+          <p className="text-sm font-semibold uppercase tracking-wide text-canopy dark:text-emerald-400">Wildlife Population Intelligence System</p>
+          <h1 className="mt-3 text-3xl font-semibold text-ink dark:text-white">Register</h1>
           <form className="mt-8 space-y-4" onSubmit={handleSubmit}>
             <FormField icon={UserRound} label="Full name">
-              <input className="field-input" value={form.full_name} onChange={(event) => setForm({ ...form, full_name: event.target.value })} required />
+              <input className="field-input text-ink dark:text-white" value={form.full_name} onChange={(event) => setForm({ ...form, full_name: event.target.value })} required />
             </FormField>
             <FormField icon={Mail} label="Email">
-              <input className="field-input" type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} required />
+              <input className="field-input text-ink dark:text-white" type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} required />
             </FormField>
             <FormField icon={Lock} label="Password">
-              <input className="field-input" type="password" minLength="6" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} required />
+              <input className="field-input text-ink dark:text-white" type="password" minLength="6" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} required />
             </FormField>
             <label className="block">
-              <span className="text-sm font-medium text-slate-700">Role</span>
-              <div className="mt-2 flex h-11 items-center gap-2 rounded border border-slate-300 px-3 focus-within:border-canopy">
-                <BadgeCheck size={17} className="text-slate-400" aria-hidden="true" />
-                <select className="w-full bg-transparent text-sm outline-none" value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}>
+              <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Role</span>
+              <div className="mt-2 flex h-11 items-center gap-2 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 focus-within:border-canopy dark:focus-within:border-canopy">
+                <BadgeCheck size={17} className="text-slate-400 dark:text-slate-500" aria-hidden="true" />
+                <select className="w-full bg-transparent text-sm outline-none text-ink dark:text-white" value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}>
                   {roles.map(([value, label]) => (
-                    <option key={value} value={value}>
+                    <option key={value} value={value} className="text-ink dark:text-slate-900">
                       {label}
                     </option>
                   ))}
                 </select>
               </div>
             </label>
-            {error && <p className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
+            {error && <p className="rounded border border-red-200 dark:border-red-900/30 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">{error}</p>}
             <button type="submit" disabled={submitting} className="h-11 w-full rounded bg-canopy px-4 text-sm font-semibold text-white hover:bg-[#185a44] disabled:cursor-not-allowed disabled:opacity-70">
               {submitting ? "Creating..." : "Create account"}
             </button>
           </form>
-          <p className="mt-5 text-sm text-slate-600">
+          <p className="mt-5 text-sm text-slate-600 dark:text-slate-400">
             Already registered?{" "}
-            <Link className="font-semibold text-canopy hover:underline" to="/login">
+            <Link className="font-semibold text-canopy dark:text-emerald-400 hover:underline" to="/login">
               Sign in
             </Link>
           </p>
@@ -89,9 +89,9 @@ function Register() {
 function FormField({ icon: Icon, label, children }) {
   return (
     <label className="block">
-      <span className="text-sm font-medium text-slate-700">{label}</span>
-      <div className="mt-2 flex h-11 items-center gap-2 rounded border border-slate-300 px-3 focus-within:border-canopy">
-        <Icon size={17} className="text-slate-400" aria-hidden="true" />
+      <span className="text-sm font-medium text-slate-700 dark:text-slate-300">{label}</span>
+      <div className="mt-2 flex h-11 items-center gap-2 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 focus-within:border-canopy dark:focus-within:border-canopy">
+        <Icon size={17} className="text-slate-400 dark:text-slate-500" aria-hidden="true" />
         {children}
       </div>
     </label>
