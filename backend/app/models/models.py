@@ -127,10 +127,23 @@ class Detection(Base):
 
     id = Column(UUID(as_uuid=False), primary_key=True, default=gen_uuid)
     observation_id = Column(UUID(as_uuid=False), ForeignKey("observations.id"), nullable=False)
-    species_id = Column(UUID(as_uuid=False), ForeignKey("species.id"), nullable=False)
+    # nullable so unmatched YAMNet/audio labels are still recorded
+    species_id = Column(UUID(as_uuid=False), ForeignKey("species.id"), nullable=True)
     confidence = Column(Float, nullable=False)
     count = Column(Integer, default=1)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Bounding box pixel coords from YOLOv8 (nullable for audio detections)
+    bbox_x1 = Column(Float, nullable=True)
+    bbox_y1 = Column(Float, nullable=True)
+    bbox_x2 = Column(Float, nullable=True)
+    bbox_y2 = Column(Float, nullable=True)
+
+    # Raw model label when species_id could not be resolved
+    raw_label = Column(String, nullable=True)
+
+    # Which model produced this detection: "yolo", "birdnet", "yamnet"
+    detection_source = Column(String, nullable=True)
 
     observation = relationship("Observation", back_populates="detections")
     species = relationship("Species", back_populates="detections")

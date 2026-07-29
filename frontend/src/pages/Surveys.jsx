@@ -1,4 +1,4 @@
-import { Pencil, Plus, Radar, Trash2, Search, X } from "lucide-react";
+import { Leaf, Pencil, Plus, Radar, Trash2, Search, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -127,6 +127,9 @@ function Surveys() {
                         <div className="flex justify-end items-center gap-2">
                           <Link to={`/observations?survey_id=${survey.id}`} className="rounded p-2 text-slate-400 dark:text-slate-500 hover:bg-moss dark:hover:bg-canopy/20 hover:text-canopy dark:hover:text-emerald-400 transition-colors" title="View Observations">
                             <Radar size={16} />
+                          </Link>
+                          <Link to={`/biodiversity?survey_id=${survey.id}`} className="rounded p-2 text-slate-400 dark:text-slate-500 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors" title="Biodiversity Report">
+                            <Leaf size={16} />
                           </Link>
                           {canWrite && (
                             <button

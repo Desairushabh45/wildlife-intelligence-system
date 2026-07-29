@@ -92,6 +92,27 @@ SPECIES_LIST = [
         "conservation_status": ConservationStatus.VULNERABLE,
         "is_endangered": False,
     },
+    {
+        "common_name": "Sloth Bear",
+        "scientific_name": "Melursus ursinus",
+        "taxonomic_class": "mammal",
+        "conservation_status": ConservationStatus.VULNERABLE,
+        "is_endangered": True,
+    },
+    {
+        "common_name": "Asiatic Cheetah (Cheetha)",
+        "scientific_name": "Acinonyx jubatus venaticus",
+        "taxonomic_class": "mammal",
+        "conservation_status": ConservationStatus.CRITICALLY_ENDANGERED,
+        "is_endangered": True,
+    },
+    {
+        "common_name": "Indian Fox",
+        "scientific_name": "Vulpes bengalensis",
+        "taxonomic_class": "mammal",
+        "conservation_status": ConservationStatus.LEAST_CONCERN,
+        "is_endangered": False,
+    },
 ]
 
 SITES = [

@@ -1,7 +1,8 @@
-# Secrets
+# Secrets & Config
 .env
+*.env
 
-# Python
+# Python & Virtual Environments
 __pycache__/
 *.pyc
 .venv/
@@ -10,13 +11,17 @@ venv/
 # Node
 node_modules/
 
-# Build artifacts
+# Build & Dist
 dist/
 build/
 
-# Logs
-*.log
+# Model weights & uploads
+*.pt
+*.tflite
+uploads/
+backend/uploads/
 
-# OS
+# Logs & OS
+*.log
 .DS_Store
 Thumbs.db

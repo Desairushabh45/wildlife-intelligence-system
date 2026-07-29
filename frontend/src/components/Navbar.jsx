@@ -11,6 +11,8 @@ const navLinks = [
   { path: "/surveys", label: "Surveys" },
   { path: "/observations", label: "Observations" },
   { path: "/species", label: "Species" },
+  { path: "/population", label: "Population" },
+  { path: "/conservation", label: "Conservation" },
 ];
 
 function Navbar() {

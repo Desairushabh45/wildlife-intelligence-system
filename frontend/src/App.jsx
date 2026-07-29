@@ -13,6 +13,9 @@ import Surveys from "./pages/Surveys.jsx";
 import Profile from "./pages/Profile.jsx";
 import Search from "./pages/Search.jsx";
 import Observations from "./pages/Observations.jsx";
+import Biodiversity from "./pages/Biodiversity.jsx";
+import Population from "./pages/Population.jsx";
+import Conservation from "./pages/Conservation.jsx";
 
 function App() {
   const { token } = useAuth();
@@ -83,6 +86,30 @@ function App() {
           element={
             <ProtectedRoute>
               <Search />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/biodiversity"
+          element={
+            <ProtectedRoute>
+              <Biodiversity />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/population"
+          element={
+            <ProtectedRoute>
+              <Population />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/conservation"
+          element={
+            <ProtectedRoute>
+              <Conservation />
             </ProtectedRoute>
           }
         />

@@ -11,3 +11,14 @@ bcrypt==4.0.1
 python-multipart==0.0.9
 pydantic[email]==2.9.2
 python-dotenv==1.0.1
+ultralytics==8.3.145
+opencv-python-headless==4.10.0.84
+Pillow==10.4.0
+birdnetlib==0.18.1
+librosa==0.10.2.post1
+resampy
+soundfile
+numpy==1.26.4
+tflite-runtime==2.14.0
+tensorflow
+tensorflow-hub
