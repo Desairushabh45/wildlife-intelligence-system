@@ -167,12 +167,18 @@ def get_population_trends(site_id: str, db: Session) -> Dict[str, Any]:
         return {"site_id": site_id, "site_name": None, "months": [], "species_list": [], "series": []}
 
     now = datetime.datetime.utcnow()
-    # Generate last 6 month labels [YYYY-MM]
+    # Generate exact calendar month labels [YYYY-MM] for the last 6 months
     month_dates = []
-    for i in range(5, -1, -1):
-        # Go back i months
-        dt = now - datetime.timedelta(days=i * 30)
+    year = now.year
+    month = now.month
+    for _ in range(6):
+        dt = datetime.datetime(year, month, 1)
         month_dates.append((dt.strftime("%Y-%m"), dt.strftime("%b %Y")))
+        month -= 1
+        if month == 0:
+            month = 12
+            year -= 1
+    month_dates.reverse()
 
     base_q = (
         db.query(Detection, Observation, Survey)

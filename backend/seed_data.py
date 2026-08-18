@@ -6,6 +6,7 @@ Run from the backend/ directory:
 """
 
 import sys
+sys.stdout.reconfigure(encoding='utf-8')
 from datetime import datetime
 
 from passlib.context import CryptContext
@@ -51,6 +52,12 @@ USERS = [
     {
         "full_name": "Admin User",
         "email": "admin@wildlife.com",
+        "hashed_password": DEFAULT_PASSWORD,
+        "role": UserRole.ADMINISTRATOR,
+    },
+    {
+        "full_name": "Rushabh Desai",
+        "email": "rushabhdesai78@gmail.com",
         "hashed_password": DEFAULT_PASSWORD,
         "role": UserRole.ADMINISTRATOR,
     },
@@ -110,6 +117,13 @@ SPECIES_LIST = [
         "common_name": "Indian Fox",
         "scientific_name": "Vulpes bengalensis",
         "taxonomic_class": "mammal",
+        "conservation_status": ConservationStatus.LEAST_CONCERN,
+        "is_endangered": False,
+    },
+    {
+        "common_name": "House Crow",
+        "scientific_name": "Corvus splendens",
+        "taxonomic_class": "bird",
         "conservation_status": ConservationStatus.LEAST_CONCERN,
         "is_endangered": False,
     },
@@ -264,6 +278,10 @@ def main():
     print("=" * 60)
     print("🌿 Wildlife Intelligence System – Database Seeder")
     print("=" * 60)
+
+    import app.models
+    from app.core.database import Base, engine
+    Base.metadata.create_all(bind=engine)
 
     db = SessionLocal()
     try:

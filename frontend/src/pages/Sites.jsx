@@ -1,4 +1,4 @@
-import { MapPinned, Pencil, Plus, Trash2, Search, Activity, ShieldAlert, ChevronRight, BarChart2 } from "lucide-react";
+import { MapPinned, Pencil, Plus, Trash2, Search, Activity, ShieldAlert, ChevronRight, BarChart2, HeartPulse } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -11,6 +11,7 @@ import { ConfirmModal } from "../components/ui/ConfirmModal.jsx";
 import { EmptyState } from "../components/ui/EmptyState.jsx";
 import { LoadingSkeleton } from "../components/ui/LoadingSkeleton.jsx";
 import { useToast } from "../components/ui/Toast.jsx";
+import { SiteHealthModal } from "../components/SiteHealthModal.jsx";
 
 const deviceTypes = [
   ["camera_trap", "Camera trap"],
@@ -60,6 +61,7 @@ function Sites() {
 
   const [editingSite, setEditingSite] = useState(null);
   const [deletingSite, setDeletingSite] = useState(null);
+  const [selectedHealthSite, setSelectedHealthSite] = useState(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
   const canWrite = useMemo(() => ["administrator", "forest_department_officer"].includes(user?.role), [user]);
@@ -255,6 +257,14 @@ function Sites() {
                     {site.latitude.toFixed(4)}, {site.longitude.toFixed(4)}
                   </span>
                   <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedHealthSite(site)}
+                      className="text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 font-bold transition-colors flex items-center gap-1 bg-emerald-50 dark:bg-emerald-900/30 px-2.5 py-1 rounded-lg border border-emerald-200 dark:border-emerald-800/50"
+                    >
+                      <HeartPulse size={14} />
+                      Health Report
+                    </button>
                     <Link
                       to={`/biodiversity?site_id=${site.id}`}
                       className="text-slate-500 hover:text-canopy dark:text-slate-400 dark:hover:text-emerald-400 transition-colors flex items-center gap-1"
@@ -275,6 +285,13 @@ function Sites() {
             );
           })}
         </div>
+      )}
+
+      {selectedHealthSite && (
+        <SiteHealthModal
+          site={selectedHealthSite}
+          onClose={() => setSelectedHealthSite(null)}
+        />
       )}
 
       {isModalOpen && (

@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.api import analytics, auth, sites, species, surveys, observations, population, habitat, conservation, health
+from app.api import analytics, auth, sites, species, surveys, observations, population, habitat, conservation, health, gis, reports, system
 from app.core.database import Base, engine
 
 # IMPORTANT: Import models so SQLAlchemy registers them
@@ -53,6 +53,9 @@ app.include_router(population.router)
 app.include_router(habitat.router)
 app.include_router(conservation.router)
 app.include_router(health.router)
+app.include_router(gis.router)
+app.include_router(reports.router)
+app.include_router(system.router)
 
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 

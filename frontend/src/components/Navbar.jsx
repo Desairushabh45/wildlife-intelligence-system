@@ -13,6 +13,8 @@ const navLinks = [
   { path: "/species", label: "Species" },
   { path: "/population", label: "Population" },
   { path: "/conservation", label: "Conservation" },
+  { path: "/map", label: "Map" },
+  { path: "/reports", label: "Reports" },
 ];
 
 function Navbar() {

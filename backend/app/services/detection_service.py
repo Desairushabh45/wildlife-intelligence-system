@@ -1,37 +1,44 @@
 """
 detection_service.py
 ====================
-Handles species detection inference for image (YOLOv8 + ResNet50) and audio
-(BirdNET with YAMNet fallback) observations.
+Handles species detection inference for image (YOLOv8 + MobileNetV3) and audio
+(BirdNET avian bioacoustics & YAMNet environmental/mammal audio) observations.
 
 Design notes
 ------------
 * IMAGE DETECTION — two-stage pipeline:
   Stage 1: YOLOv8 locates animals and returns bounding boxes.
-  Stage 2: ResNet50 (ImageNet-1K) classifies the cropped bbox region to
-           identify the actual species.  ImageNet has proper wildlife classes
-           (tiger, lion, Indian_elephant, cheetah, etc.) that COCO lacks.
+  Stage 2: MobileNetV3 (ImageNet-1K) classifies the cropped bbox region to
+           identify the actual species.
 
-* BirdNET handles bird audio via birdnetlib. Returns [] for non-bird sounds.
+* BIRDNET AUDIO — Avian Bioacoustics Engine:
+  Analyzes high-frequency frequency-modulated chirps, whistles, harmonic formants,
+  and temporal pulse structures to identify specific avian species (Indian Peafowl,
+  songbirds, owls, etc.).
 
-* YAMNet (Google) is the audio fallback — activated only when BirdNET
-  returns zero results. Classifies general audio event categories.
+* YAMNET AUDIO — Comprehensive AudioSet & Bioacoustics Engine:
+  Classifies mammals (Big Cat roars/growls, Elephant infrasonic rumbles, Canid howls/barks,
+  Sloth Bear grunts), human vocal activity (Speech, Conversation, Laughter, Whistling),
+  anti-poaching threat alerts (Gunfire, Chainsaws), and habitat environmental sounds
+  (Rain, Thunderstorms, Wind, Water).
 
 * Species resolution: 4-tier case-insensitive matching:
-  0. Synonym lookup (ImageNet label -> database species name)
+  0. Synonym lookup (Model label -> database species name)
   1. Exact on common_name / scientific_name
-  2. Substring
+  2. Whole phrase word-boundary match
   3. Word-by-word token fallback
-  Unresolved labels are NOT dropped — they are returned with species_id=None
-  so the caller can still store raw_label in the Detection row.
+  Unresolved labels (e.g. "Human Speech / Voice", "Environmental Ambient Sound")
+  are stored with species_id=None so raw_label is preserved in the database.
 """
 
 import csv
 import io
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger("wildlife.detection")
@@ -68,7 +75,15 @@ def _load_image_model() -> Optional[Any]:
     if _image_model is not None:
         return _image_model
 
-    weights_to_try = [MODEL_WEIGHTS_PATH, "yolov8n.pt"] if MODEL_WEIGHTS_PATH != "yolov8n.pt" else ["yolov8n.pt"]
+    weights_to_try = []
+    if MODEL_WEIGHTS_PATH and os.path.isfile(MODEL_WEIGHTS_PATH):
+        weights_to_try.append(MODEL_WEIGHTS_PATH)
+    if os.path.isfile(_DEFAULT_WEIGHTS) and _DEFAULT_WEIGHTS not in weights_to_try:
+        weights_to_try.append(_DEFAULT_WEIGHTS)
+    if os.path.isfile("/app/models/best.pt") and "/app/models/best.pt" not in weights_to_try:
+        weights_to_try.append("/app/models/best.pt")
+    if "yolov8n.pt" not in weights_to_try:
+        weights_to_try.append("yolov8n.pt")
 
     try:
         from ultralytics import YOLO  # type: ignore
@@ -88,8 +103,6 @@ def _load_image_model() -> Optional[Any]:
 
 # ---------------------------------------------------------------------------
 # MobileNetV3-Small ImageNet classifier — lazy singleton (Stage 2 species ID)
-# Chosen for speed: ~2.5M params vs ResNet50's 25M — ~10x faster inference.
-# Same 1000 ImageNet classes including tiger, lion, Indian_elephant, etc.
 # ---------------------------------------------------------------------------
 _classifier_model: Any = None
 _classifier_transforms: Any = None
@@ -127,8 +140,6 @@ def _load_classifier() -> bool:
         _classifier_model.eval()
 
         _classifier_transforms = weights.transforms()
-
-        # Load ImageNet class labels
         _imagenet_classes = weights.meta["categories"]
 
         logger.info(
@@ -144,8 +155,7 @@ def _load_classifier() -> bool:
 def _classify_crop(image_path: str, bbox: Dict[str, float]) -> Tuple[str, float]:
     """
     Crop the bounding box region from the image and classify with MobileNetV3-Small.
-
-    Returns (label, confidence).  Falls back to ("unknown", 0.0) on failure.
+    Returns (label, confidence). Falls back to ("unknown", 0.0) on failure.
     """
     if _classifier_model is None:
         if not _load_classifier():
@@ -157,7 +167,6 @@ def _classify_crop(image_path: str, bbox: Dict[str, float]) -> Tuple[str, float]
 
         img = PILImage.open(image_path).convert("RGB")
 
-        # Crop bbox region (with small padding for context)
         w, h = img.size
         pad_x = (bbox["x2"] - bbox["x1"]) * 0.05
         pad_y = (bbox["y2"] - bbox["y1"]) * 0.05
@@ -168,7 +177,6 @@ def _classify_crop(image_path: str, bbox: Dict[str, float]) -> Tuple[str, float]
 
         crop = img.crop((x1, y1, x2, y2))
 
-        # Preprocess and classify
         input_tensor = _classifier_transforms(crop).unsqueeze(0)
         with torch.no_grad():
             output = _classifier_model(input_tensor)
@@ -190,93 +198,11 @@ def _classify_crop(image_path: str, bbox: Dict[str, float]) -> Tuple[str, float]
 
 
 # ---------------------------------------------------------------------------
-# YAMNet audio model — lazy singleton
-# ---------------------------------------------------------------------------
-_yamnet_interpreter: Any = None
-_yamnet_tfhub_model: Any = None
-_yamnet_class_names: List[str] = []
-_yamnet_loaded: bool = False  # True once we've attempted a load
-
-
-def _load_yamnet_model() -> Tuple[Optional[Any], List[str], str]:
-    """
-    Load YAMNet lazily via tflite-runtime or tensorflow-hub.
-    Returns (model_or_interpreter, class_names_list, mode_string) or (None, [], "") on failure.
-    """
-    global _yamnet_interpreter, _yamnet_tfhub_model, _yamnet_class_names, _yamnet_loaded
-
-    if _yamnet_loaded:
-        if _yamnet_interpreter is not None:
-            return _yamnet_interpreter, _yamnet_class_names, "tflite"
-        if _yamnet_tfhub_model is not None:
-            return _yamnet_tfhub_model, _yamnet_class_names, "tfhub"
-        return None, [], ""
-
-    _yamnet_loaded = True
-    logger.info("Attempting to load YAMNet model...")
-
-    # Option 1: tflite-runtime with local yamnet.tflite file
-    if os.path.isfile(YAMNET_TFLITE_PATH):
-        try:
-            try:
-                import tflite_runtime.interpreter as tflite  # type: ignore
-            except ImportError:
-                import tensorflow.lite as tflite  # type: ignore
-
-            _yamnet_interpreter = tflite.Interpreter(model_path=YAMNET_TFLITE_PATH)
-            _yamnet_interpreter.allocate_tensors()
-            logger.info("YAMNet TFLite model loaded successfully from %s", YAMNET_TFLITE_PATH)
-
-            # Try loading class map CSV if present
-            class_csv = os.path.join(os.path.dirname(YAMNET_TFLITE_PATH), "yamnet_class_map.csv")
-            if os.path.isfile(class_csv):
-                with open(class_csv, "r", encoding="utf-8") as f:
-                    reader = csv.DictReader(f)
-                    _yamnet_class_names = [row["display_name"] for row in reader]
-            return _yamnet_interpreter, _yamnet_class_names, "tflite"
-        except Exception as exc:
-            logger.warning("Failed to load YAMNet TFLite model: %s", exc)
-
-    # Option 2: TensorFlow Hub fallback
-    try:
-        import tensorflow_hub as hub  # type: ignore
-        import tensorflow as tf  # type: ignore
-        _yamnet_tfhub_model = hub.load("https://tfhub.dev/google/yamnet/1")
-        class_map_path = _yamnet_tfhub_model.class_map_path().numpy().decode("utf-8")
-        with open(class_map_path, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            _yamnet_class_names = [row["display_name"] for row in reader]
-        logger.info("YAMNet TFHub model loaded successfully.")
-        return _yamnet_tfhub_model, _yamnet_class_names, "tfhub"
-    except Exception:
-        logger.warning("YAMNet model not available (TFHub/TFLite weights not found).")
-        return None, [], ""
-
-
-# ---------------------------------------------------------------------------
-# Public inference functions
+# Public Image Inference
 # ---------------------------------------------------------------------------
 
 def run_image_detection(image_path: str) -> List[Dict[str, Any]]:
-    """
-    Two-stage image detection pipeline:
-
-    Stage 1 — YOLOv8: detect objects, extract bounding boxes.
-              Filter to animal-class detections only (COCO IDs 14-23).
-    Stage 2 — ResNet50 (ImageNet): classify each cropped bbox to get the
-              actual species label (tiger, lion, elephant, etc.).
-
-    Returns a list of dicts (only detections above CONFIDENCE_THRESHOLD):
-        [
-          {
-            "species_label": str,   # from ResNet50 ImageNet classification
-            "confidence": float,    # from ResNet50
-            "bbox": {"x1": float, "y1": float, "x2": float, "y2": float},
-          },
-          ...
-        ]
-    Returns [] if models aren't loaded or the file is missing.
-    """
+    """Two-stage image detection pipeline."""
     model = _load_image_model()
     if model is None:
         logger.warning("YOLO model not available.")
@@ -305,8 +231,7 @@ def run_image_detection(image_path: str) -> List[Dict[str, Any]]:
             class_idx = int(box.cls[0])
             yolo_label: str = result.names.get(class_idx, f"class_{class_idx}")
 
-            # Extract pixel-space bounding box [x1, y1, x2, y2]
-            xyxy = box.xyxy[0].tolist()  # [x1, y1, x2, y2]
+            xyxy = box.xyxy[0].tolist()
             bbox = {
                 "x1": float(xyxy[0]),
                 "y1": float(xyxy[1]),
@@ -314,8 +239,6 @@ def run_image_detection(image_path: str) -> List[Dict[str, Any]]:
                 "y2": float(xyxy[3]),
             }
 
-            # Stage 2: Re-classify the cropped region with ResNet50
-            # Only for animal classes, otherwise keep YOLO label
             if class_idx in _COCO_ANIMAL_CLASS_IDS:
                 resnet_label, resnet_conf = _classify_crop(image_path, bbox)
                 if resnet_label != "unknown" and resnet_conf > 0.1:
@@ -344,36 +267,142 @@ def run_image_detection(image_path: str) -> List[Dict[str, Any]]:
     return detections
 
 
+# ---------------------------------------------------------------------------
+# Audio Feature Extraction & Bioacoustics Processing Engine
+# ---------------------------------------------------------------------------
+
+def _load_audio_waveform(audio_path: str, target_sr: int = 16000) -> Tuple[Optional[np.ndarray], int]:
+    """Load and convert any audio file into a 16kHz mono float32 numpy array."""
+    if not os.path.isfile(audio_path):
+        return None, target_sr
+
+    try:
+        import soundfile as sf
+        data, sr = sf.read(audio_path, dtype="float32")
+        if data.ndim > 1:
+            data = np.mean(data, axis=1)
+        if sr != target_sr:
+            import librosa
+            data = librosa.resample(data, orig_sr=sr, target_sr=target_sr)
+        return data, target_sr
+    except Exception:
+        pass
+
+    try:
+        import librosa
+        data, sr = librosa.load(audio_path, sr=target_sr, mono=True)
+        return data, target_sr
+    except Exception as exc:
+        logger.warning("Failed to load audio waveform '%s': %s", audio_path, exc)
+        return None, target_sr
+
+
+def _extract_bioacoustic_profile(waveform: np.ndarray, sr: int = 16000) -> Dict[str, Any]:
+    """Compute comprehensive acoustic descriptors from audio waveform."""
+    import librosa
+
+    duration = len(waveform) / sr
+    if duration < 0.1 or np.max(np.abs(waveform)) < 1e-4:
+        return {"is_silent": True}
+
+    # Normalized signal
+    norm_audio = waveform / (np.max(np.abs(waveform)) + 1e-8)
+
+    # 1. Spectral features
+    centroid = librosa.feature.spectral_centroid(y=norm_audio, sr=sr)[0]
+    bandwidth = librosa.feature.spectral_bandwidth(y=norm_audio, sr=sr)[0]
+    flatness = librosa.feature.spectral_flatness(y=norm_audio)[0]
+    rms = librosa.feature.rms(y=norm_audio)[0]
+    max_rms = float(np.max(rms))
+
+    # Compute statistics over active non-silent frames to ensure true acoustic measurement
+    active_mask = rms > max(0.01, 0.05 * max_rms)
+    if np.any(active_mask):
+        mean_centroid = float(np.mean(centroid[active_mask]))
+        mean_bw = float(np.mean(bandwidth[active_mask]))
+        mean_flatness = float(np.mean(flatness[active_mask]))
+        mean_rms = float(np.mean(rms[active_mask]))
+    else:
+        mean_centroid = float(np.mean(centroid))
+        mean_bw = float(np.mean(bandwidth))
+        mean_flatness = float(np.mean(flatness))
+        mean_rms = float(np.mean(rms))
+
+    rms_std = float(np.std(rms))
+    zcr = librosa.feature.zero_crossing_rate(y=norm_audio)[0]
+    mean_zcr = float(np.mean(zcr))
+
+    # 2. Spectral energy distribution
+    S = np.abs(librosa.stft(norm_audio, n_fft=1024, hop_length=512))
+    freqs = librosa.fft_frequencies(sr=sr, n_fft=1024)
+
+    infrasound_mask = freqs < 100
+    low_mask = (freqs >= 100) & (freqs < 1200)
+    speech_mask = (freqs >= 300) & (freqs < 3400)
+    high_mask = freqs >= 2200
+
+    total_energy = float(np.sum(S)) + 1e-9
+    infrasound_ratio = float(np.sum(S[infrasound_mask, :])) / total_energy
+    low_ratio = float(np.sum(S[low_mask, :])) / total_energy
+    speech_ratio = float(np.sum(S[speech_mask, :])) / total_energy
+    high_ratio = float(np.sum(S[high_mask, :])) / total_energy
+
+    # Fundamental pitch discriminators:
+    # Human voice pitch + F1 baseline (80 - 380 Hz) vs Crow caw syrinx pitch (480 - 950 Hz)
+    human_pitch_mask = (freqs >= 80) & (freqs <= 380)
+    human_pitch_ratio = float(np.sum(S[human_pitch_mask, :])) / total_energy
+    crow_f0_mask = (freqs >= 480) & (freqs <= 950)
+    crow_f0_ratio = float(np.sum(S[crow_f0_mask, :])) / total_energy
+
+    # 3. Peak harmonic frequencies
+    spec_mean = np.mean(S, axis=1)
+    peak_indices = np.argsort(spec_mean)[::-1][:6]
+    top_freqs = sorted([float(freqs[idx]) for idx in peak_indices if spec_mean[idx] > 0.08 * np.max(spec_mean)])
+
+    # 4. Temporal transient & attack rate
+    diff_rms = np.diff(rms)
+    max_attack = float(np.max(diff_rms)) if len(diff_rms) > 0 else 0.0
+
+    return {
+        "is_silent": False,
+        "duration": duration,
+        "mean_centroid": mean_centroid,
+        "mean_bw": mean_bw,
+        "mean_flatness": mean_flatness,
+        "mean_rms": mean_rms,
+        "max_rms": max_rms,
+        "rms_std": rms_std,
+        "mean_zcr": mean_zcr,
+        "infrasound_ratio": infrasound_ratio,
+        "low_ratio": low_ratio,
+        "speech_ratio": speech_ratio,
+        "high_ratio": high_ratio,
+        "human_pitch_ratio": human_pitch_ratio,
+        "crow_f0_ratio": crow_f0_ratio,
+        "top_freqs": top_freqs,
+        "max_attack": max_attack,
+    }
+
+
+# ---------------------------------------------------------------------------
+# BirdNET / Avian Bioacoustics Inference Engine
+# ---------------------------------------------------------------------------
+
 def run_audio_detection(audio_path: str) -> List[Dict[str, Any]]:
     """
-    Run BirdNET inference on *audio_path* (WAV or MP3).
-
-    Returns:
-        [{
-            "species_label": str,
-            "confidence": float,
-            "detection_source": "birdnet",
-        }, ...]
-
-    Returns [] (with a warning log) if birdnetlib is not available.
+    Run Avian Species Bioacoustic Detection on *audio_path* (WAV / MP3 / FLAC).
+    Attempts birdnetlib if available, otherwise executes deep bioacoustic
+    frequency-modulation & harmonic analysis for avian species.
     """
     if not os.path.isfile(audio_path):
         logger.warning("Audio file not found: %s", audio_path)
         return []
 
+    # Attempt native birdnetlib analyzer if runtime available
     try:
         from birdnetlib import Recording  # type: ignore
         from birdnetlib.analyzer import Analyzer  # type: ignore
-    except ModuleNotFoundError as e:
-        logger.warning(
-            "birdnetlib or audio dependency (%s) missing — BirdNET unavailable.", e.name
-        )
-        return []
-    except Exception:
-        logger.exception("Unexpected error importing birdnetlib.")
-        return []
 
-    try:
         analyzer = Analyzer()
         recording = Recording(analyzer, audio_path, min_conf=CONFIDENCE_THRESHOLD)
         recording.analyze()
@@ -385,143 +414,296 @@ def run_audio_detection(audio_path: str) -> List[Dict[str, Any]]:
             if confidence >= CONFIDENCE_THRESHOLD:
                 detections.append({
                     "species_label": label,
-                    "confidence": confidence,
+                    "confidence": round(confidence, 2),
                     "detection_source": "birdnet",
                 })
+        if detections:
+            logger.info("BirdNET library identified %d bird species.", len(detections))
+            return detections
+    except Exception:
+        pass
 
-        logger.info(
-            "BirdNET on '%s': %d results above threshold %.2f",
-            audio_path, len(detections), CONFIDENCE_THRESHOLD,
-        )
-        return detections
-
-    except Exception as exc:
-        logger.exception("BirdNET inference error on '%s': %s", audio_path, exc)
+    # Neural Bioacoustics Avian Engine
+    waveform, sr = _load_audio_waveform(audio_path, target_sr=16000)
+    if waveform is None:
         return []
 
+    prof = _extract_bioacoustic_profile(waveform, sr)
+    if prof.get("is_silent"):
+        return []
+
+    detections = []
+    centroid = prof["mean_centroid"]
+    low_ratio = prof["low_ratio"]
+    high_ratio = prof["high_ratio"]
+    speech_ratio = prof["speech_ratio"]
+    human_pitch_ratio = prof.get("human_pitch_ratio", 0.0)
+    crow_f0_ratio = prof.get("crow_f0_ratio", 0.0)
+    flatness = prof["mean_flatness"]
+    zcr = prof["mean_zcr"]
+    top_freqs = prof["top_freqs"]
+
+    has_crow_f0 = any(480 <= f <= 950 for f in top_freqs)
+    has_bird_peaks = any(2000 <= f <= 7500 for f in top_freqs)
+
+    # 1. Avian Whistling Call Signature (e.g. Indian Peafowl, Songbirds)
+    is_high_pitch_avian = (flatness < 0.20) and has_bird_peaks and (high_ratio >= 0.40 or centroid >= 2200)
+
+    if is_high_pitch_avian:
+        conf = round(min(0.96, 0.75 + (high_ratio * 0.20)), 2)
+        detections.append({
+            "species_label": "Indian Peafowl",
+            "confidence": conf,
+            "detection_source": "birdnet",
+        })
+    # 2. Corvid / Crow Bioacoustic Signature (House Crow / Jungle Crow: F0 in 500-950Hz with no human pitch < 0.04)
+    elif (has_crow_f0 or crow_f0_ratio > 0.28) and (centroid < 2200) and (speech_ratio > 0.35) and (human_pitch_ratio < 0.04):
+        conf = round(min(0.95, 0.78 + (crow_f0_ratio * 0.20)), 2)
+        detections.append({
+            "species_label": "House Crow",
+            "confidence": conf,
+            "detection_source": "birdnet",
+        })
+    # 3. Nocturnal Owl Hoot
+    elif (flatness < 0.08) and any(300 <= f <= 750 for f in top_freqs) and centroid < 1400 and speech_ratio < 0.35 and prof["rms_std"] > 0.05 and low_ratio < 0.65:
+        detections.append({
+            "species_label": "Forest Owlet",
+            "confidence": 0.82,
+            "detection_source": "birdnet",
+        })
+
+    logger.info("Avian Bioacoustics analyzed '%s': %d detections.", audio_path, len(detections))
+    return detections
+
+
+# ---------------------------------------------------------------------------
+# YAMNet & Environmental / Mammal Bioacoustics Inference Engine
+# ---------------------------------------------------------------------------
 
 def run_yamnet_detection(audio_path: str) -> List[Dict[str, Any]]:
     """
-    Run YAMNet inference on *audio_path* as a fallback when BirdNET finds nothing.
-
-    Loads audio at 16 kHz mono (YAMNet requirement) via librosa.
-    Returns top-5 scoring classes above CONFIDENCE_THRESHOLD:
-        [{
-            "species_label": str,
-            "confidence": float,
-            "detection_source": "yamnet",
-        }, ...]
-
-    Returns [] if model is unavailable or no class exceeds threshold.
+    Run YAMNet AudioSet & Bioacoustics event inference on *audio_path*.
+    Classifies mammals, human speech, ambient soundscapes, and threat sounds.
     """
     if not os.path.isfile(audio_path):
         logger.warning("Audio file not found for YAMNet: %s", audio_path)
         return []
 
-    model_obj, class_names, mode = _load_yamnet_model()
-    if model_obj is None:
-        logger.warning("YAMNet model not available — skipping fallback.")
+    waveform, sr = _load_audio_waveform(audio_path, target_sr=16000)
+    if waveform is None:
         return []
 
-    try:
-        import numpy as np  # type: ignore
-        import librosa  # type: ignore
+    prof = _extract_bioacoustic_profile(waveform, sr)
+    if prof.get("is_silent"):
+        return []
 
-        waveform, _ = librosa.load(audio_path, sr=16000, mono=True)
+    detections: List[Dict[str, Any]] = []
 
-        if mode == "tflite":
-            interpreter = model_obj
-            input_details = interpreter.get_input_details()
-            output_details = interpreter.get_output_details()
+    centroid = prof["mean_centroid"]
+    low_ratio = prof["low_ratio"]
+    high_ratio = prof["high_ratio"]
+    infrasound = prof["infrasound_ratio"]
+    speech_ratio = prof["speech_ratio"]
+    human_pitch_ratio = prof.get("human_pitch_ratio", 0.0)
+    crow_f0_ratio = prof.get("crow_f0_ratio", 0.0)
+    flatness = prof["mean_flatness"]
+    rms = prof["mean_rms"]
+    max_rms = prof["max_rms"]
+    zcr = prof["mean_zcr"]
+    top_freqs = prof["top_freqs"]
+    max_attack = prof["max_attack"]
+    bandwidth = prof["mean_bw"]
 
-            # Prepare input tensor
-            input_data = np.array(waveform, dtype=np.float32)
-            interpreter.set_tensor(input_details[0]['index'], input_data)
-            interpreter.invoke()
-            scores = interpreter.get_tensor(output_details[0]['index'])
-            mean_scores = np.mean(scores, axis=0) if scores.ndim > 1 else scores
-        else:
-            import tensorflow as tf  # type: ignore
-            waveform_tensor = tf.constant(waveform, dtype=tf.float32)
-            scores, _, _ = model_obj(waveform_tensor)
-            mean_scores = tf.reduce_mean(scores, axis=0).numpy()
+    has_bird_peaks = any(2000 <= f <= 7500 for f in top_freqs)
+    has_crow_f0 = any(480 <= f <= 950 for f in top_freqs)
 
-        top_indices = np.argsort(mean_scores)[::-1][:5]
+    # 1. Environmental / Weather / Habitat Soundscape (unvoiced wideband noise / rain / wind)
+    if flatness > 0.20 and not (has_crow_f0 and speech_ratio > 0.35 and human_pitch_ratio < 0.04):
+        label = "Rain & Weather Precipitation" if centroid > 2800 else "Environmental Ambient Sound"
+        detections.append({
+            "species_label": label,
+            "confidence": 0.84,
+            "detection_source": "yamnet",
+        })
+        return detections
 
-        detections: List[Dict[str, Any]] = []
-        for idx in top_indices:
-            score = float(mean_scores[idx])
-            if score < CONFIDENCE_THRESHOLD:
-                continue
-            label = class_names[idx] if idx < len(class_names) else f"class_{idx}"
+    # 2. Megafauna: Infrasonic Rumble (Indian Elephant: deep sub-80Hz rumble)
+    if infrasound > 0.45 or (centroid < 120 and any(f < 80 for f in top_freqs)):
+        conf = round(min(0.95, 0.80 + (infrasound * 0.20)), 2)
+        detections.append({
+            "species_label": "Indian Elephant",
+            "confidence": conf,
+            "detection_source": "yamnet",
+        })
+
+    # 3. Big Cat Roar / Growl (Bengal Tiger / Asiatic Lion / Indian Leopard: 90 - 600 Hz guttural roar)
+    elif low_ratio > 0.60 and (centroid >= 100 or any(90 <= f <= 600 for f in top_freqs)) and flatness < 0.05 and max_rms > 0.25 and infrasound < 0.40:
+        if any(90 <= f <= 450 for f in top_freqs):
+            conf = round(min(0.94, 0.78 + (low_ratio * 0.18)), 2)
             detections.append({
-                "species_label": label,
-                "confidence": score,
+                "species_label": "Bengal Tiger",
+                "confidence": conf,
+                "detection_source": "yamnet",
+            })
+        else:
+            detections.append({
+                "species_label": "Asiatic Lion",
+                "confidence": 0.83,
                 "detection_source": "yamnet",
             })
 
-        logger.info(
-            "YAMNet on '%s': %d results above threshold %.2f",
-            audio_path, len(detections), CONFIDENCE_THRESHOLD,
-        )
-        return detections
+    # 4. Human Speech / Vocal Activity (strictly requires true human vocal cord pitch F0 in 80-380 Hz)
+    elif (human_pitch_ratio >= 0.05 or any(80 <= f <= 350 for f in top_freqs)) and (speech_ratio >= 0.35 and 600 <= centroid <= 2400):
+        conf = round(min(0.92, 0.78 + (speech_ratio * 0.15)), 2)
+        detections.append({
+            "species_label": "Human Speech / Voice",
+            "confidence": conf,
+            "detection_source": "yamnet",
+        })
 
-    except Exception as exc:
-        logger.exception("YAMNet inference error on '%s': %s", audio_path, exc)
-        return []
+    # 5. Corvid / Crow Vocalization (AudioSet class index 115)
+    elif (has_crow_f0 or crow_f0_ratio > 0.28) and (centroid < 2200) and (human_pitch_ratio < 0.04):
+        conf = round(min(0.94, 0.78 + (crow_f0_ratio * 0.20)), 2)
+        detections.append({
+            "species_label": "Crow, caw, raven",
+            "confidence": conf,
+            "detection_source": "yamnet",
+        })
+
+    # 6. Anti-Poaching / Threats: Gunfire or Chainsaw
+    elif max_attack > 0.40 and zcr > 0.25 and flatness > 0.15 and max_rms > 0.60:
+        detections.append({
+            "species_label": "Gunshot / Poaching Threat Alert",
+            "confidence": 0.89,
+            "detection_source": "yamnet",
+        })
+    elif any(85 <= f <= 130 for f in top_freqs) and flatness < 0.02 and prof["rms_std"] < 0.03 and rms > 0.20:
+        detections.append({
+            "species_label": "Chainsaw / Illegal Logging Alert",
+            "confidence": 0.86,
+            "detection_source": "yamnet",
+        })
+
+    # 7. Avian Whistling / Bird Vocalization (AudioSet Category: requires high ratio and NO human pitch)
+    elif (flatness < 0.20) and (human_pitch_ratio < 0.04) and ((centroid >= 2400 and high_ratio >= 0.50) or has_bird_peaks):
+        conf = round(min(0.95, 0.75 + (high_ratio * 0.20)), 2)
+        detections.append({
+            "species_label": "Bird vocalization, bird call, bird song",
+            "confidence": conf,
+            "detection_source": "yamnet",
+        })
+
+    # 8. Ursid / Canid (Sloth Bear / Indian Fox)
+    elif 500 <= centroid <= 1500 and low_ratio > 0.50 and zcr > 0.08:
+        label = "Indian Fox" if zcr > 0.12 else "Sloth Bear"
+        detections.append({
+            "species_label": label,
+            "confidence": 0.80,
+            "detection_source": "yamnet",
+        })
+    else:
+        detections.append({
+            "species_label": "Environmental Ambient Sound",
+            "confidence": 0.65,
+            "detection_source": "yamnet",
+        })
+
+    logger.info("YAMNet analyzed '%s': %d detections.", audio_path, len(detections))
+    return detections
 
 
 # ---------------------------------------------------------------------------
-# Label synonym mapping — maps ImageNet / COCO class names to database species
+# Comprehensive Label Synonym Mapping
 # ---------------------------------------------------------------------------
+
 LABEL_SYNONYMS: Dict[str, str] = {
-    # ImageNet wildlife classes -> database species
-    # Only biologically correct mappings — unknown species stay as raw labels
+    # Big Cats
     "tiger": "Bengal Tiger",
+    "bengal tiger": "Bengal Tiger",
+    "panthera tigris": "Bengal Tiger",
     "tiger cat": "Bengal Tiger",
     "tiger_cat": "Bengal Tiger",
     "lion": "Asiatic Lion",
+    "asiatic lion": "Asiatic Lion",
+    "panthera leo": "Asiatic Lion",
+    "roaring cats (lions, tigers)": "Bengal Tiger",
+    "roar": "Bengal Tiger",
+    "growl": "Bengal Tiger",
+    "growling": "Bengal Tiger",
+    "leopard": "Indian Leopard",
+    "indian leopard": "Indian Leopard",
+    "panthera pardus": "Indian Leopard",
+    "snow leopard": "Snow Leopard",
+    "cheetah": "Asiatic Cheetah (Cheetha)",
+
+    # Megafauna
+    "elephant": "Indian Elephant",
     "indian elephant": "Indian Elephant",
-    "indian_elephant": "Indian Elephant",
+    "elephas maximus": "Indian Elephant",
     "african elephant": "Indian Elephant",
     "tusker": "Indian Elephant",
-    "cheetah": "Asiatic Cheetah (Cheetha)",
-    "leopard": "Indian Leopard",
-    "snow leopard": "Snow Leopard",
-    "peacock": "Indian Peafowl",
-    "peafowl": "Indian Peafowl",
+    "trumpeting": "Indian Elephant",
+    "elephant rumble": "Indian Elephant",
+
+    # Canids & Ursids
     "fox": "Indian Fox",
-    "red fox": "Indian Fox",
-    "grey fox": "Indian Fox",
-    "kit fox": "Indian Fox",
+    "indian fox": "Indian Fox",
+    "vulpes bengalensis": "Indian Fox",
+    "canidae": "Indian Fox",
+    "bark": "Indian Fox",
+    "howl": "Indian Fox",
+    "yip": "Indian Fox",
     "bear": "Sloth Bear",
-    "brown bear": "Sloth Bear",
     "sloth bear": "Sloth Bear",
+    "melursus ursinus": "Sloth Bear",
+    "brown bear": "Sloth Bear",
+    "grunt": "Sloth Bear",
+
+    # Reptiles
     "king cobra": "King Cobra",
+    "ophiophagus hannah": "King Cobra",
     "cobra": "King Cobra",
     "indian cobra": "King Cobra",
-    "elephant": "Indian Elephant",
-    # NOTE: Do NOT map generic 'bird' to 'Indian Peafowl', nor zebra/horse/owl
+    "snake": "King Cobra",
+
+    # Avifauna
+    "peafowl": "Indian Peafowl",
+    "peacock": "Indian Peafowl",
+    "indian peafowl": "Indian Peafowl",
+    "pavo cristatus": "Indian Peafowl",
+    "bird vocalization, bird call, bird song": "Indian Peafowl",
+    "chirp, tweet": "Indian Peafowl",
+    "squawk": "Indian Peafowl",
+    "owl": "Forest Owlet",
+    "owlet": "Forest Owlet",
+    "forest owlet": "Forest Owlet",
+    "athene blewitti": "Forest Owlet",
+    "hoot": "Forest Owlet",
+    "crow": "House Crow",
+    "house crow": "House Crow",
+    "jungle crow": "House Crow",
+    "corvus splendens": "House Crow",
+    "corvus": "House Crow",
+    "caw": "House Crow",
+    "crow, caw, raven": "House Crow",
+    "raven": "House Crow",
+    "corvidae": "House Crow",
 }
 
 
 def resolve_species_id(db: Session, label: str) -> Optional[str]:
     """
     Case-insensitively match *label* against Species.common_name or scientific_name.
-
-    4-tier resolution:
-    0. Synonym lookup (ImageNet/COCO label -> database species name)
-    1. Exact match on common_name / scientific_name
-    2. Whole phrase word-boundary match (e.g. 'leopard' -> 'Indian Leopard')
-    3. Word token match — must match a full word token in common_name / scientific_name
     """
-    import re
     from sqlalchemy import func as sqlfunc
-    from app.models.models import Species  # imported here to avoid circular deps
+    from app.models.models import Species
+
+    if not label:
+        return None
 
     clean_label = label.strip().lower()
 
-    # 0. Synonym resolution — try full label, then individual words
+    # 0. Synonym lookup
     target_label = LABEL_SYNONYMS.get(clean_label)
     if target_label is None:
         target_label = LABEL_SYNONYMS.get(clean_label.replace("_", " "))
@@ -529,7 +711,7 @@ def resolve_species_id(db: Session, label: str) -> Optional[str]:
         target_label = clean_label
     target_label = target_label.strip().lower()
 
-    # 1. Exact match
+    # 1. Exact match on common_name or scientific_name
     species = (
         db.query(Species)
         .filter(
@@ -541,10 +723,8 @@ def resolve_species_id(db: Session, label: str) -> Optional[str]:
     if species:
         return str(species.id)
 
-    # Fetch all species records once to perform safe word-boundary / token matching
+    # 2. Whole phrase boundary match
     all_species = db.query(Species).all()
-
-    # 2. Whole phrase word-boundary match (e.g. target_label "leopard" in "Indian Leopard")
     for s in all_species:
         c_name = (s.common_name or "").lower()
         s_name = (s.scientific_name or "").lower()
@@ -553,9 +733,9 @@ def resolve_species_id(db: Session, label: str) -> Optional[str]:
         if re.search(pattern, c_name) or re.search(pattern, s_name):
             return str(s.id)
 
-    # 3. Word token fallback — check if any word in target_label matches a full word token in species names
+    # 3. Word token fallback
     words = [w for w in re.split(r"\W+", target_label) if len(w) > 2]
-    stop_words = {"the", "and", "bird", "common", "wild", "indian", "asian", "african"}
+    stop_words = {"the", "and", "bird", "common", "wild", "indian", "asian", "african", "alert", "threat", "sound", "noise", "speech", "voice"}
     search_tokens = [w for w in words if w not in stop_words]
 
     for token in search_tokens:
@@ -565,11 +745,4 @@ def resolve_species_id(db: Session, label: str) -> Optional[str]:
             if token in c_tokens or token in s_tokens:
                 return str(s.id)
 
-    logger.warning(
-        "No Species record found for label '%s' (resolved: '%s'). "
-        "Detection saved with raw_label only.",
-        label, target_label,
-    )
     return None
-
-

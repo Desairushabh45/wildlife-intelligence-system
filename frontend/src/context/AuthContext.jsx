@@ -25,8 +25,10 @@ export function AuthProvider({ children }) {
           setUser(data);
           localStorage.setItem("wildlife_user", JSON.stringify(data));
         }
-      } catch {
-        logout();
+      } catch (err) {
+        if (err.response?.status === 401 || err.response?.status === 403) {
+          logout();
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -45,7 +47,10 @@ export function AuthProvider({ children }) {
   }
 
   async function login(email, password) {
-    const { data } = await api.post("/api/auth/login", { email, password });
+    const { data } = await api.post("/api/auth/login", {
+      email: (email || "").trim(),
+      password,
+    });
     persistAuth(data.access_token, data.user);
     return data.user;
   }

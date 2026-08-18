@@ -19,8 +19,8 @@ logger = logging.getLogger("wildlife.observations")
 
 router = APIRouter(prefix="/api/observations", tags=["observations"])
 
-UPLOAD_DIR = "/app/uploads"
-# We're running in a docker container mapped to backend:/app, so /app/uploads maps to backend/uploads
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 
 @router.post("/", response_model=ObservationOut, status_code=201)
 def create_observation(
@@ -70,15 +70,18 @@ def create_observation(
     mongo_collection = get_observations_collection()
     mongo_id = None
     if mongo_collection is not None:
-        metadata = {
-            "original_filename": filename,
-            "content_type": file.content_type,
-            "size_bytes": len(contents),
-            "upload_timestamp": datetime.datetime.utcnow(),
-            "analysis_results": {}
-        }
-        res = mongo_collection.insert_one(metadata)
-        mongo_id = str(res.inserted_id)
+        try:
+            metadata = {
+                "original_filename": filename,
+                "content_type": file.content_type,
+                "size_bytes": len(contents),
+                "upload_timestamp": datetime.datetime.utcnow(),
+                "analysis_results": {}
+            }
+            res = mongo_collection.insert_one(metadata)
+            mongo_id = str(res.inserted_id)
+        except Exception as e:
+            logger.warning(f"Could not save metadata to MongoDB: {e}")
 
     # Insert into Postgres
     observation = Observation(
@@ -163,13 +166,13 @@ def delete_observation(
 # Detection endpoints
 # ---------------------------------------------------------------------------
 
-UPLOAD_BASE_DIR = "/app"  # Root of the Docker container filesystem
-
-
 def _resolve_local_path(file_path: str) -> str:
     """Convert a stored file_path like /uploads/images/abc.jpg to the real
-    filesystem path inside the Docker container: /app/uploads/images/abc.jpg"""
-    return os.path.join(UPLOAD_BASE_DIR, file_path.lstrip("/"))
+    filesystem path."""
+    rel = file_path.lstrip("/")
+    if rel.startswith("uploads/"):
+        rel = rel[len("uploads/"):]
+    return os.path.join(UPLOAD_DIR, rel)
 
 
 def _build_detection_out(detection: Detection, db: Session) -> DetectionOut:
@@ -235,23 +238,28 @@ def run_detection(
         default_source = "yolo"
 
     elif obs_type == ObservationType.AUDIO:
-        # Step 1: Try BirdNET
-        raw_results = detection_service.run_audio_detection(local_path)
-        default_source = "birdnet"
+        # Run both Avian (BirdNET) and General AudioSet / Mammal Bioacoustics (YAMNet) analysis
+        bird_results = detection_service.run_audio_detection(local_path)
+        yamnet_results = detection_service.run_yamnet_detection(local_path)
 
-        # Step 2: Fall back to YAMNet if BirdNET returned nothing
-        if not raw_results:
-            logger.info(
-                "BirdNET found nothing for observation %s — trying YAMNet fallback.",
-                observation_id,
-            )
-            raw_results = detection_service.run_yamnet_detection(local_path)
-            default_source = "yamnet"
+        combined_results = []
+        seen_labels = set()
+        for res in sorted(bird_results + yamnet_results, key=lambda x: x.get("confidence", 0), reverse=True):
+            lbl = res.get("species_label")
+            if lbl and lbl not in seen_labels:
+                seen_labels.add(lbl)
+                combined_results.append(res)
+
+        raw_results = combined_results
+        default_source = "yamnet" if not bird_results and yamnet_results else "birdnet"
     else:
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported observation type for detection: {obs_type}",
         )
+
+    # Clear old detections for this observation before adding fresh results
+    db.query(Detection).filter(Detection.observation_id == observation_id).delete()
 
     created_detections: List[Detection] = []
 
@@ -269,7 +277,7 @@ def run_detection(
             "species_id": species_id,
             "confidence": confidence,
             "count": 1,
-            "raw_label": label if species_id is None else None,
+            "raw_label": label,
             "detection_source": source,
         }
 

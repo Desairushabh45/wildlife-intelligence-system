@@ -52,6 +52,7 @@ function Conservation() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [priorityFilter, setPriorityFilter] = useState("all");
+  const [siteFilter, setSiteFilter] = useState("all");
   const [searchTerm, setSearchTerm] = useState("");
 
   useEffect(() => {
@@ -73,15 +74,20 @@ function Conservation() {
     }
   }
 
+  // Unique site names for dropdown filter
+  const siteOptions = Array.from(new Set(recommendations.map((r) => r.site_name))).filter(Boolean);
+
   // Filter recommendations
   const filteredRecommendations = recommendations.filter((rec) => {
     const matchesPriority =
       priorityFilter === "all" || rec.priority.toLowerCase() === priorityFilter.toLowerCase();
+    const matchesSite =
+      siteFilter === "all" || rec.site_name === siteFilter;
     const matchesSearch =
       searchTerm === "" ||
       rec.message.toLowerCase().includes(searchTerm.toLowerCase()) ||
       rec.site_name.toLowerCase().includes(searchTerm.toLowerCase());
-    return matchesPriority && matchesSearch;
+    return matchesPriority && matchesSite && matchesSearch;
   });
 
   const countByPriority = {
@@ -170,11 +176,11 @@ function Conservation() {
       </div>
 
       {/* Filter and Search Bar */}
-      <Card className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4">
+      <Card className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4">
         {/* Priority Filter Buttons */}
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="text-xs font-bold text-slate-400 uppercase mr-2 flex items-center gap-1">
-            <Filter size={14} /> Filter:
+            <Filter size={14} /> Priority:
           </span>
           {["all", "critical", "urgent", "high", "medium", "low"].map((p) => (
             <button
@@ -191,16 +197,36 @@ function Conservation() {
           ))}
         </div>
 
-        {/* Search input */}
-        <div className="relative min-w-[240px]">
-          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-          <input
-            type="text"
-            placeholder="Search site or alert text..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 pl-9 pr-4 py-1.5 text-sm text-ink dark:text-white outline-none focus:border-canopy focus:bg-white dark:focus:bg-slate-900"
-          />
+        <div className="flex flex-col sm:flex-row items-center gap-3">
+          {/* Site Filter Dropdown */}
+          <div className="flex items-center gap-2 bg-slate-100 dark:bg-slate-800 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 text-xs w-full sm:w-auto">
+            <MapPin size={14} className="text-emerald-500 shrink-0" />
+            <span className="font-bold text-slate-500 dark:text-slate-400 shrink-0">Site:</span>
+            <select
+              value={siteFilter}
+              onChange={(e) => setSiteFilter(e.target.value)}
+              className="bg-transparent font-semibold text-ink dark:text-white outline-none cursor-pointer pr-2 text-xs w-full"
+            >
+              <option value="all">All Sites ({siteOptions.length})</option>
+              {siteOptions.map((sName) => (
+                <option key={sName} value={sName} className="dark:bg-slate-800">
+                  {sName}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Search input */}
+          <div className="relative min-w-[200px] w-full sm:w-auto">
+            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              type="text"
+              placeholder="Search alert text..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 pl-9 pr-4 py-1.5 text-xs text-ink dark:text-white outline-none focus:border-canopy focus:bg-white dark:focus:bg-slate-900"
+            />
+          </div>
         </div>
       </Card>
 

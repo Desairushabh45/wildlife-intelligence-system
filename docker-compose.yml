@@ -31,7 +31,6 @@ services:
 
   backend:
     build: ./backend
-    container_name: wildlife_backend
     restart: unless-stopped
     env_file:
       - ./backend/.env
@@ -44,6 +43,14 @@ services:
         condition: service_started
     volumes:
       - ./backend:/app
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
 
 volumes:
   postgres_data:

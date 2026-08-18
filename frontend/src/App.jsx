@@ -16,6 +16,8 @@ import Observations from "./pages/Observations.jsx";
 import Biodiversity from "./pages/Biodiversity.jsx";
 import Population from "./pages/Population.jsx";
 import Conservation from "./pages/Conservation.jsx";
+import MapView from "./pages/MapView.jsx";
+import Reports from "./pages/Reports.jsx";
 
 function App() {
   const { token } = useAuth();
@@ -110,6 +112,22 @@ function App() {
           element={
             <ProtectedRoute>
               <Conservation />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/map"
+          element={
+            <ProtectedRoute>
+              <MapView />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/reports"
+          element={
+            <ProtectedRoute>
+              <Reports />
             </ProtectedRoute>
           }
         />

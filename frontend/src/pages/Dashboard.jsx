@@ -1,4 +1,4 @@
-import { AlertTriangle, Binoculars, MapPinned, Radar, Shield, Leaf, Activity, ShieldAlert, ChevronRight, BarChart3, Bell } from "lucide-react";
+import { AlertTriangle, Binoculars, MapPinned, Radar, Shield, Leaf, Activity, ShieldAlert, ChevronRight, BarChart3, Bell, Server, Cpu, FileText, Map, UserCheck, Clock } from "lucide-react";
 import { useEffect, useState, useMemo } from "react";
 import { Link } from "react-router-dom";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from "recharts";
@@ -15,16 +15,21 @@ function Dashboard() {
   const [data, setData] = useState({ sites: [], surveys: [], species: [] });
   const [healthScores, setHealthScores] = useState([]);
   const [recommendations, setRecommendations] = useState([]);
+  const [topSpecies, setTopSpecies] = useState([]);
+  const [systemHealth, setSystemHealth] = useState(null);
+  const [gisDetections, setGisDetections] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     async function loadData() {
       try {
-        const [sitesRes, surveysRes, speciesRes, recsRes] = await Promise.all([
+        const [sitesRes, surveysRes, speciesRes, recsRes, sysRes, gisRes] = await Promise.all([
           api.get("/api/sites/").catch(() => ({ data: [] })),
           api.get("/api/surveys/").catch(() => ({ data: [] })),
           api.get("/api/species/").catch(() => ({ data: [] })),
           api.get("/api/conservation/recommendations/all").catch(() => ({ data: [] })),
+          api.get("/api/system/health").catch(() => ({ data: null })),
+          api.get("/api/gis/detections").catch(() => ({ data: [] })),
         ]);
 
         const sites = sitesRes.data || [];
@@ -34,19 +39,52 @@ function Dashboard() {
           species: speciesRes.data || [],
         });
         setRecommendations(recsRes.data || []);
+        setSystemHealth(sysRes.data);
+        setGisDetections(gisRes.data || []);
 
-        // Fetch health score for each site
+        // Fetch health score & population summary for each site
+        const speciesCountMap = {};
         const healthList = await Promise.all(
           sites.map(async (site) => {
             try {
-              const res = await api.get(`/api/health/site/${site.id}`);
-              return res.data;
+              const [hRes, pRes] = await Promise.all([
+                api.get(`/api/habitat/site/${site.id}/score`),
+                api.get(`/api/population/site/${site.id}/summary`),
+              ]);
+
+              const popList = pRes.data?.species_population || [];
+              popList.forEach((sp) => {
+                const name = sp.species_name;
+                const count = sp.detection_count || 0;
+                if (!speciesCountMap[name]) {
+                  speciesCountMap[name] = {
+                    name,
+                    scientific: sp.scientific_name,
+                    is_endangered: sp.is_endangered,
+                    count: 0,
+                  };
+                }
+                speciesCountMap[name].count += count;
+              });
+
+              return {
+                site_id: site.id,
+                site_name: site.name,
+                health_score: hRes.data.habitat_score,
+                conservation_status: hRes.data.classification,
+                badge_class: hRes.data.bg_class,
+              };
             } catch {
               return { site_id: site.id, site_name: site.name, health_score: 0.0, conservation_status: "Critical", badge_class: "bg-red-100 text-red-800" };
             }
           })
         );
         setHealthScores(healthList);
+
+        const sortedTop = Object.values(speciesCountMap)
+          .sort((a, b) => b.count - a.count)
+          .slice(0, 3);
+        setTopSpecies(sortedTop);
       } finally {
         setLoading(false);
       }
@@ -69,9 +107,14 @@ function Dashboard() {
       {/* Header */}
       <section className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-ink dark:text-white">Welcome, {user?.full_name}</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-bold text-ink dark:text-white">Welcome, {user?.full_name}</h1>
+            <span className="rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 text-xs font-extrabold px-3 py-1 uppercase tracking-wider">
+              {user?.role?.replace(/_/g, " ")}
+            </span>
+          </div>
           <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-            Real-time ecosystem health, active alerts, and population intelligence.
+            Real-time ecosystem health, active alerts, and GIS population intelligence.
           </p>
         </div>
 
@@ -85,15 +128,15 @@ function Dashboard() {
         </Link>
       </section>
 
-      {/* M3 Intelligence Section: Ecosystem Health Overview */}
+      {/* Ecosystem Health Overview */}
       <section className="space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-bold text-ink dark:text-white flex items-center gap-2">
             <Activity size={20} className="text-emerald-500" />
-            Ecosystem Health Overview
+            Ecosystem Habitat Index Overview
           </h2>
           <Link to="/sites" className="text-xs font-bold text-canopy dark:text-emerald-400 hover:underline">
-            View All Site Intelligence →
+            View All Sites →
           </Link>
         </div>
 
@@ -103,7 +146,7 @@ function Dashboard() {
               <div className="flex items-start justify-between">
                 <div>
                   <h3 className="font-bold text-ink dark:text-white text-sm line-clamp-1">{h.site_name}</h3>
-                  <p className="text-xs text-slate-400">Site Ecosystem Health</p>
+                  <p className="text-xs text-slate-400">Site Ecosystem Index</p>
                 </div>
                 <span className={`rounded-full px-2 py-0.5 text-[10px] font-extrabold ${h.badge_class}`}>
                   {h.conservation_status}
@@ -123,17 +166,12 @@ function Dashboard() {
               </div>
             </Card>
           ))}
-          {healthScores.length === 0 && (
-            <Card className="col-span-full p-6 text-center text-sm text-slate-400">
-              No site health data recorded yet.
-            </Card>
-          )}
         </div>
       </section>
 
       {/* Active Alerts Banner Card */}
       {recommendations.length > 0 && (
-        <Card className="bg-gradient-to-r from-slate-900 to-slate-800 text-white p-6 rounded-2xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+        <Card className="bg-gradient-to-r from-slate-900 to-slate-800 text-white p-6 rounded-2xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-xl">
           <div className="flex items-start gap-4">
             <div className="p-3 bg-red-500/20 rounded-xl text-red-400 shrink-0">
               <ShieldAlert size={28} />
@@ -143,7 +181,7 @@ function Dashboard() {
                 <span className="bg-red-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full uppercase">
                   {criticalCount} Critical / Urgent
                 </span>
-                <span className="text-xs text-slate-400">{recommendations.length} total recommendations active</span>
+                <span className="text-xs text-slate-400">{recommendations.length} total active conservation rules</span>
               </div>
               <p className="text-lg font-bold mt-1 text-white">
                 {recommendations[0]?.message}
@@ -162,10 +200,18 @@ function Dashboard() {
       )}
 
       {/* Role-Specific Dashboards */}
-      {user?.role === "administrator" && <AdminDashboard data={data} />}
-      {user?.role === "wildlife_researcher" && <ResearcherDashboard data={data} />}
-      {user?.role === "conservation_officer" && <ConservationDashboard data={data} />}
-      {user?.role === "forest_department_officer" && <ForestDeptDashboard data={data} />}
+      {user?.role === "administrator" && (
+        <AdminDashboard data={data} systemHealth={systemHealth} />
+      )}
+      {user?.role === "wildlife_researcher" && (
+        <ResearcherDashboard data={data} topSpecies={topSpecies} />
+      )}
+      {user?.role === "conservation_officer" && (
+        <ConservationDashboard data={data} recommendations={recommendations} />
+      )}
+      {user?.role === "forest_department_officer" && (
+        <ForestDeptDashboard data={data} detections={gisDetections} />
+      )}
     </main>
   );
 }
@@ -192,21 +238,12 @@ function StatCard({ label, value, icon: Icon, tone, trend }) {
   );
 }
 
-function AdminDashboard({ data }) {
+function AdminDashboard({ data, systemHealth }) {
   const cards = [
     { label: "Total Sites", value: data.sites.length, icon: MapPinned, tone: "bg-moss dark:bg-canopy/20 text-canopy dark:text-emerald-400", trend: "+12%" },
     { label: "Total Surveys", value: data.surveys.length, icon: Radar, tone: "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400", trend: "+5%" },
     { label: "Total Species", value: data.species.length, icon: Leaf, tone: "bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300" },
   ];
-
-  const habitatData = useMemo(() => {
-    const counts = data.sites.reduce((acc, site) => {
-      const type = site.habitat_type || 'Unknown';
-      acc[type] = (acc[type] || 0) + 1;
-      return acc;
-    }, {});
-    return Object.entries(counts).map(([name, value]) => ({ name, value }));
-  }, [data.sites]);
 
   return (
     <div className="space-y-6">
@@ -214,50 +251,87 @@ function AdminDashboard({ data }) {
         {cards.map((c) => <StatCard key={c.label} {...c} />)}
       </section>
 
+      {/* System Health Overview Card */}
+      <Card noPadding className="border-2 border-emerald-500/20">
+        <div className="border-b border-slate-100 dark:border-slate-800 px-6 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Server className="text-emerald-500" size={20} />
+            <h2 className="text-lg font-semibold text-ink dark:text-white">System Infrastructure Health (/api/system/health)</h2>
+          </div>
+          <span className="bg-emerald-100 text-emerald-800 text-xs font-bold px-3 py-1 rounded-full uppercase">
+            {systemHealth?.status || "OK"}
+          </span>
+        </div>
+        <div className="p-6 grid gap-4 sm:grid-cols-3">
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 bg-slate-50 dark:bg-slate-900/50">
+            <p className="text-xs font-semibold text-slate-400 uppercase">PostgreSQL Database</p>
+            <p className="text-lg font-bold text-emerald-600 dark:text-emerald-400 mt-1 capitalize">
+              {systemHealth?.database || "Connected"}
+            </p>
+          </div>
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 bg-slate-50 dark:bg-slate-900/50">
+            <p className="text-xs font-semibold text-slate-400 uppercase">MongoDB Metadata Store</p>
+            <p className="text-lg font-bold text-slate-600 dark:text-slate-300 mt-1 capitalize">
+              {systemHealth?.mongo || "Postgres Mode"}
+            </p>
+          </div>
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 bg-slate-50 dark:bg-slate-900/50">
+            <p className="text-xs font-semibold text-slate-400 uppercase">System Uptime</p>
+            <p className="text-lg font-bold text-ink dark:text-white mt-1 flex items-center gap-1.5">
+              <Clock size={16} className="text-slate-400" />
+              {systemHealth?.uptime_seconds ? `${Math.floor(systemHealth.uptime_seconds / 60)} min ${systemHealth.uptime_seconds % 60}s` : "Active"}
+            </p>
+          </div>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function ResearcherDashboard({ data, topSpecies }) {
+  return (
+    <div className="space-y-6">
+      <section className="grid gap-4 md:grid-cols-2">
+        <StatCard label="Species Cataloged" value={data.species.length} icon={Leaf} tone="bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400" />
+        <StatCard label="Total Expeditions" value={data.surveys.length} icon={Binoculars} tone="bg-moss dark:bg-canopy/20 text-canopy dark:text-emerald-400" />
+      </section>
+
       <div className="grid gap-6 md:grid-cols-2">
         <Card noPadding>
-          <div className="border-b border-slate-100 dark:border-slate-800 px-6 py-4">
-            <h2 className="text-lg font-semibold text-ink dark:text-white">Sites by Habitat Type</h2>
+          <div className="border-b border-slate-100 dark:border-slate-800 px-6 py-4 flex justify-between items-center">
+            <h2 className="text-lg font-semibold text-ink dark:text-white flex items-center gap-2">
+              <BarChart3 size={20} className="text-emerald-500" />
+              Most Active Species
+            </h2>
+            <Link to="/population" className="text-xs font-bold text-emerald-600 hover:underline">Population Trends →</Link>
           </div>
-          <div className="h-72 p-4">
-            {habitatData.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={habitatData}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={60}
-                    outerRadius={90}
-                    paddingAngle={2}
-                    dataKey="value"
-                  >
-                    {habitatData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip />
-                  <Legend verticalAlign="bottom" height={36}/>
-                </PieChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="flex h-full items-center justify-center text-sm text-slate-400">No data available</div>
-            )}
+          <div className="p-6 space-y-4">
+            {topSpecies.map((sp, idx) => (
+              <div key={sp.name} className="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-3 last:border-0">
+                <div>
+                  <p className="font-bold text-sm text-ink dark:text-white">{sp.name}</p>
+                  <p className="text-xs italic text-slate-400">{sp.scientific}</p>
+                </div>
+                <span className="font-extrabold text-emerald-600 bg-emerald-50 dark:bg-emerald-950 px-3 py-1 rounded-full text-xs">
+                  {sp.count} detections
+                </span>
+              </div>
+            ))}
           </div>
         </Card>
 
         <Card noPadding>
           <div className="border-b border-slate-100 dark:border-slate-800 px-6 py-4">
-            <h2 className="text-lg font-semibold text-ink dark:text-white">Quick Intelligence Navigation</h2>
+            <h2 className="text-lg font-semibold text-ink dark:text-white flex items-center gap-2">
+              <FileText size={20} className="text-emerald-500" />
+              Research & Export System
+            </h2>
           </div>
-          <div className="p-6 grid gap-4">
-            <Link to="/population" className="flex items-center gap-3 rounded-xl border border-slate-200 dark:border-slate-800 p-4 hover:border-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-900/10 transition-all group">
-              <div className="flex h-10 w-10 items-center justify-center rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 group-hover:bg-emerald-100 group-hover:text-emerald-600"><BarChart3 size={20} /></div>
-              <div><p className="font-semibold text-ink dark:text-white">Population Intelligence</p><p className="text-xs text-slate-500 dark:text-slate-400">Track 6-month species trends and density</p></div>
-            </Link>
-            <Link to="/conservation" className="flex items-center gap-3 rounded-xl border border-slate-200 dark:border-slate-800 p-4 hover:border-amber-500 hover:bg-amber-50 dark:hover:bg-amber-900/10 transition-all group">
-              <div className="flex h-10 w-10 items-center justify-center rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 group-hover:bg-amber-100 group-hover:text-amber-600"><ShieldAlert size={20} /></div>
-              <div><p className="font-semibold text-ink dark:text-white">Conservation Alerts</p><p className="text-xs text-slate-500 dark:text-slate-400">Intervention recommendations by priority</p></div>
+          <div className="p-6 space-y-3">
+            <p className="text-xs text-slate-500 dark:text-slate-400">Export field survey PDF reports and raw detection datasets in Excel format.</p>
+            <Link to="/reports" className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm px-4 py-2.5 transition-colors">
+              Access Reports & Export Center
+              <ChevronRight size={16} />
             </Link>
           </div>
         </Card>
@@ -266,101 +340,74 @@ function AdminDashboard({ data }) {
   );
 }
 
-function ResearcherDashboard({ data }) {
-  return (
-    <div className="space-y-6">
-      <section className="grid gap-4 md:grid-cols-2">
-        <StatCard label="Species Cataloged" value={data.species.length} icon={Leaf} tone="bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400" />
-        <StatCard label="Total Surveys" value={data.surveys.length} icon={Binoculars} tone="bg-moss dark:bg-canopy/20 text-canopy dark:text-emerald-400" />
-      </section>
-      <Card noPadding className="overflow-hidden">
-        <div className="border-b border-slate-100 dark:border-slate-800 px-6 py-4">
-          <h2 className="text-lg font-semibold text-ink dark:text-white">Recent Surveys</h2>
-        </div>
-        <div className="divide-y divide-slate-100 dark:divide-slate-800">
-          {data.surveys.slice(0, 5).map(survey => (
-            <div key={survey.id} className="px-6 py-4 flex justify-between items-center hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-              <div>
-                <p className="text-sm font-semibold text-ink dark:text-white">Started {new Date(survey.start_date).toLocaleDateString()}</p>
-                <p className="text-xs text-slate-500 dark:text-slate-400">{survey.notes || "No notes"}</p>
-              </div>
-              <span className="text-xs font-mono text-slate-400 dark:text-slate-500 bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded-md">{survey.site_id.substring(0,8)}</span>
-            </div>
-          ))}
-          {!data.surveys.length && <div className="p-6 text-center text-sm text-slate-500">No recent surveys.</div>}
-        </div>
-      </Card>
-    </div>
-  );
-}
-
-function ConservationDashboard({ data }) {
+function ConservationDashboard({ data, recommendations }) {
   return (
     <div className="space-y-6">
       <section className="grid gap-4 md:grid-cols-2">
         <StatCard label="Endangered Species" value={data.species.filter(s => s.is_endangered).length} icon={AlertTriangle} tone="bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400" />
-        <StatCard label="Active Sites" value={data.sites.length} icon={MapPinned} tone="bg-moss dark:bg-canopy/20 text-canopy dark:text-emerald-400" />
+        <StatCard label="Priority Action Rules" value={recommendations.length} icon={ShieldAlert} tone="bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400" />
       </section>
+
       <Card noPadding className="overflow-hidden">
-        <div className="border-b border-slate-100 dark:border-slate-800 px-6 py-4">
-          <h2 className="text-lg font-semibold text-ink dark:text-white">Monitoring Sites</h2>
+        <div className="border-b border-slate-100 dark:border-slate-800 px-6 py-4 flex justify-between items-center">
+          <h2 className="text-lg font-semibold text-ink dark:text-white flex items-center gap-2">
+            <ShieldAlert size={20} className="text-red-500" />
+            Top Priority Conservation Recommendations
+          </h2>
+          <Link to="/conservation" className="text-xs font-bold text-emerald-600 hover:underline">View All Recommendations →</Link>
         </div>
         <div className="divide-y divide-slate-100 dark:divide-slate-800">
-          {data.sites.map(site => (
-            <div key={site.id} className="px-6 py-4 flex justify-between items-center hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-              <div>
-                <p className="text-sm font-semibold text-ink dark:text-white">{site.name}</p>
-                <p className="text-xs text-slate-500 dark:text-slate-400">{site.protected_area || "Unprotected"}</p>
-              </div>
-              <span className="inline-flex rounded-full bg-slate-100 dark:bg-slate-800 px-2.5 py-1 text-xs font-medium text-slate-600 dark:text-slate-400 capitalize">
-                {site.device_type.replace("_", " ")}
+          {recommendations.slice(0, 4).map(rec => (
+            <div key={rec.id} className="p-4 flex items-start gap-3 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+              <span className={`text-[10px] font-extrabold uppercase px-2.5 py-1 rounded-full shrink-0 ${
+                rec.priority === "critical" ? "bg-red-600 text-white" :
+                rec.priority === "urgent" ? "bg-red-100 text-red-700" :
+                rec.priority === "high" ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"
+              }`}>
+                {rec.priority}
               </span>
+              <div>
+                <p className="text-sm font-semibold text-ink dark:text-white">{rec.message}</p>
+                <p className="text-xs text-slate-400 mt-0.5">Site: {rec.site_name}</p>
+              </div>
             </div>
           ))}
-          {!data.sites.length && <div className="p-6 text-center text-sm text-slate-500">No monitoring sites.</div>}
         </div>
       </Card>
     </div>
   );
 }
 
-function ForestDeptDashboard({ data }) {
-  const surveyCountBySite = data.surveys.reduce((acc, survey) => {
-    acc[survey.site_id] = (acc[survey.site_id] || 0) + 1;
-    return acc;
-  }, {});
-
+function ForestDeptDashboard({ data, detections }) {
   return (
     <div className="space-y-6">
       <section className="grid gap-4 md:grid-cols-2">
-        <StatCard label="Protected Areas" value={new Set(data.sites.map(s => s.protected_area).filter(Boolean)).size} icon={Shield} tone="bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400" />
-        <StatCard label="Total Surveys" value={data.surveys.length} icon={Radar} tone="bg-[#f5e8cd] dark:bg-amber-900/20 text-[#8c5b10] dark:text-amber-500" />
+        <StatCard label="Protected Areas Monitored" value={new Set(data.sites.map(s => s.protected_area).filter(Boolean)).size} icon={Shield} tone="bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400" />
+        <StatCard label="Recent Detection Events" value={detections.length} icon={Map} tone="bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400" />
       </section>
+
       <Card noPadding className="overflow-hidden">
-        <div className="border-b border-slate-100 dark:border-slate-800 px-6 py-4">
-          <h2 className="text-lg font-semibold text-ink dark:text-white">Site Survey Activity</h2>
+        <div className="border-b border-slate-100 dark:border-slate-800 px-6 py-4 flex justify-between items-center">
+          <h2 className="text-lg font-semibold text-ink dark:text-white flex items-center gap-2">
+            <Map size={20} className="text-emerald-500" />
+            GIS Wildlife Movement & Detection Log
+          </h2>
+          <Link to="/map" className="text-xs font-bold text-emerald-600 hover:underline">Interactive GIS Map →</Link>
         </div>
-        <table className="min-w-full divide-y divide-slate-200 dark:divide-slate-800 text-sm">
-          <thead className="bg-slate-50/80 dark:bg-slate-800/80 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-            <tr>
-              <th className="px-6 py-4">Site Name</th>
-              <th className="px-6 py-4">Protected Area</th>
-              <th className="px-6 py-4 text-right">Surveys</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-            {data.sites.map(site => (
-              <tr key={site.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-                <td className="px-6 py-4 font-semibold text-ink dark:text-white">{site.name}</td>
-                <td className="px-6 py-4 text-slate-500 dark:text-slate-400">{site.protected_area || "Not set"}</td>
-                <td className="px-6 py-4 text-right font-medium text-slate-600 dark:text-slate-300">{surveyCountBySite[site.id] || 0}</td>
-              </tr>
-            ))}
-            {!data.sites.length && (
-              <tr><td colSpan="3" className="px-6 py-8 text-center text-slate-500">No sites recorded.</td></tr>
-            )}
-          </tbody>
-        </table>
+        <div className="divide-y divide-slate-100 dark:divide-slate-800">
+          {detections.slice(0, 5).map(det => (
+            <div key={det.id} className="p-4 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-sm text-ink dark:text-white">{det.species_name}</span>
+                  {det.is_endangered && <span className="bg-red-100 text-red-700 text-[10px] font-bold px-2 py-0.5 rounded-full">Endangered</span>}
+                </div>
+                <p className="text-xs text-slate-500">{det.site_name} • Lat {det.latitude.toFixed(4)}, Lon {det.longitude.toFixed(4)}</p>
+              </div>
+              <span className="text-xs text-slate-400">{new Date(det.detected_at).toLocaleDateString()}</span>
+            </div>
+          ))}
+        </div>
       </Card>
     </div>
   );

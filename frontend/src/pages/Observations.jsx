@@ -259,14 +259,9 @@ function Observations() {
     try {
       const res = await api.post(`/api/observations/${obs.id}/detect`);
       const dets = res.data;
-      setDetectionMap(prev => ({ ...prev, [obs.id]: [...(prev[obs.id] || []), ...dets] }));
+      setDetectionMap(prev => ({ ...prev, [obs.id]: dets }));
       if (dets.length === 0) {
-        addToast(
-          obs.observation_type === "image"
-            ? "No species detected (weights file may not be loaded yet — check backend logs)."
-            : "No species detected in audio (BirdNET + YAMNet both found nothing).",
-          "error"
-        );
+        addToast("No species detected above confidence threshold (0.40).", "warning");
       } else {
         const src = dets[0]?.detection_source;
         const srcLabel = src ? ` via ${SOURCE_META[src]?.label ?? src}` : "";
@@ -465,7 +460,13 @@ function Observations() {
         <UploadModal
           surveys={surveys}
           onClose={() => setIsModalOpen(false)}
-          onUploaded={() => { loadData(); addToast("File uploaded successfully."); }}
+          onUploaded={async (newObs) => {
+            await loadData();
+            addToast("File uploaded successfully.");
+            if (newObs) {
+              runDetection(newObs);
+            }
+          }}
           initialSurvey={surveyFilter !== "all" ? surveyFilter : ""}
         />
       )}
@@ -508,10 +509,10 @@ function UploadModal({ surveys, onClose, onUploaded, initialSurvey }) {
     formData.append("file", file);
 
     try {
-      await api.post("/api/observations/", formData, {
+      const res = await api.post("/api/observations/", formData, {
         headers: { "Content-Type": "multipart/form-data" }
       });
-      onUploaded();
+      onUploaded(res.data);
       onClose();
     } catch (err) {
       addToast(err.response?.data?.detail || "Upload failed", "error");

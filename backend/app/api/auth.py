@@ -10,15 +10,18 @@ from app.schemas.auth_schemas import Token, UserCreate, UserLogin, UserOut
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
+from sqlalchemy import func
+
 @router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
 def register(payload: UserCreate, db: Session = Depends(get_db)):
-    existing = db.query(User).filter(User.email == payload.email).first()
+    clean_email = payload.email.strip().lower()
+    existing = db.query(User).filter(func.lower(User.email) == clean_email).first()
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
 
     user = User(
-        full_name=payload.full_name,
-        email=payload.email,
+        full_name=payload.full_name.strip(),
+        email=clean_email,
         hashed_password=hash_password(payload.password),
         role=payload.role,
     )
@@ -31,13 +34,19 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
 @router.post("/login", response_model=Token)
 async def login(request: Request, db: Session = Depends(get_db)):
     payload = await _read_login_payload(request)
-    user = db.query(User).filter(User.email == payload.email).first()
+    raw_email = (payload.email or payload.username or "").strip()
+    if not raw_email or not payload.password:
+        raise HTTPException(status_code=400, detail="Email and password are required")
+    clean_email = raw_email.lower()
+
+    user = db.query(User).filter(func.lower(User.email) == clean_email).first()
     if not user or not verify_password(payload.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Incorrect email or password")
     if not user.is_active:
         raise HTTPException(status_code=403, detail="User account is inactive")
 
-    token = create_access_token(data={"sub": user.id, "role": user.role.value})
+    role_str = user.role.value if hasattr(user.role, "value") else str(user.role)
+    token = create_access_token(data={"sub": str(user.id), "role": role_str})
     return {"access_token": token, "token_type": "bearer", "user": user}
 
 
@@ -52,11 +61,13 @@ async def _read_login_payload(request: Request) -> UserLogin:
         form = await request.form()
         return UserLogin(
             email=form.get("email") or form.get("username"),
-            password=form.get("password"),
+            password=form.get("password") or "",
         )
 
     try:
         data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("Invalid payload type")
     except Exception as exc:
         raise HTTPException(status_code=400, detail="Invalid login payload") from exc
 
