@@ -2,7 +2,6 @@ import enum
 import uuid
 from datetime import datetime
 
-from geoalchemy2 import Geometry
 from sqlalchemy import Boolean, Column, DateTime, Enum, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -59,7 +58,8 @@ class MonitoringSite(Base):
     habitat_type = Column(String, nullable=True)
     protected_area = Column(String, nullable=True)
     device_type = Column(Enum(DeviceType), nullable=False)
-    location = Column(Geometry(geometry_type="POINT", srid=4326), nullable=False)
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
     created_by = Column(UUID(as_uuid=False), ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
