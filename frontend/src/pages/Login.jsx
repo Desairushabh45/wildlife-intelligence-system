@@ -56,7 +56,7 @@ function Login() {
       navigate("/");
     } catch (err) {
       if (!err.response) {
-        setError("Backend server is unreachable. Please verify the backend service is running on port 8000.");
+        setError("Backend server is unreachable. Please verify the backend service is up and running.");
       } else {
         setError(err.response?.data?.detail || "Invalid email or password");
       }
