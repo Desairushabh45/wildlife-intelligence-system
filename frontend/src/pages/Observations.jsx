@@ -16,7 +16,7 @@ import { EmptyState } from "../components/ui/EmptyState.jsx";
 import { LoadingSkeleton } from "../components/ui/LoadingSkeleton.jsx";
 import { useToast } from "../components/ui/Toast.jsx";
 
-const BACKEND_URL = "http://localhost:8000";
+const BACKEND_URL = import.meta.env.VITE_API_URL || "https://wildlife-intelligence-system-production.up.railway.app";
 
 // ── Confidence badge colour ───────────────────────────────────────────────
 function confidenceColor(conf) {
