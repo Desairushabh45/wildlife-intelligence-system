@@ -10,7 +10,6 @@ sys.stdout.reconfigure(encoding='utf-8')
 from datetime import datetime
 
 from passlib.context import CryptContext
-from geoalchemy2 import WKTElement
 
 # ── Bootstrap ────────────────────────────────────────────────────────────────
 # Ensure the app package is importable when running from backend/.
@@ -224,9 +223,8 @@ def seed_monitoring_sites(db, creator_email="priya@wildlife.com"):
             habitat_type=data["habitat_type"],
             protected_area=data["protected_area"],
             device_type=data["device_type"],
-            location=WKTElement(
-                f"POINT({data['longitude']} {data['latitude']})", srid=4326
-            ),
+            latitude=data["latitude"],
+            longitude=data["longitude"],
             created_by=creator.id,
         )
         db.add(site)

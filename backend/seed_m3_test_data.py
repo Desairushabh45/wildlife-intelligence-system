@@ -17,7 +17,6 @@ sys.stdout.reconfigure(encoding='utf-8')
 import uuid
 import random
 from datetime import datetime, timedelta
-from geoalchemy2 import WKTElement
 
 sys.path.insert(0, ".")
 
@@ -105,7 +104,8 @@ def seed_m3_data():
                     habitat_type=sdef["habitat_type"],
                     protected_area=sdef["protected_area"],
                     device_type=sdef["device_type"],
-                    location=WKTElement(f"POINT({sdef['lon']} {sdef['lat']})", srid=4326),
+                    latitude=sdef["lat"],
+                    longitude=sdef["lon"],
                     created_by=admin.id,
                 )
                 db.add(site)
