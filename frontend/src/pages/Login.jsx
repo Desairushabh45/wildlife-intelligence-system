@@ -56,7 +56,7 @@ function Login() {
       navigate("/");
     } catch (err) {
       if (!err.response) {
-        setError("Backend server is unreachable. Please verify the backend service is up and running.");
+        setError("Unable to reach the server. Please check your connection and try again.");
       } else {
         setError(err.response?.data?.detail || "Invalid email or password");
       }
