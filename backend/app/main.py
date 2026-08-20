@@ -1,4 +1,5 @@
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -57,6 +58,9 @@ app.include_router(gis.router)
 app.include_router(reports.router)
 app.include_router(system.router)
 
+os.makedirs("uploads/images", exist_ok=True)
+os.makedirs("uploads/audio", exist_ok=True)
+os.makedirs("uploads/models", exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 
