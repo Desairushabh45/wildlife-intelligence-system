@@ -6,7 +6,6 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.deps import get_current_user
-from app.core.geo import coords_from_point
 from app.models.models import Detection, MonitoringSite, Observation, Species, Survey, User
 from app.services import habitat_service
 
@@ -26,7 +25,7 @@ def get_gis_sites(
     results = []
 
     for site in sites:
-        lat, lon = coords_from_point(site.location)
+        lat, lon = site.latitude, site.longitude
         hab_data = habitat_service.compute_habitat_score(site.id, db)
 
         # Calculate distinct species count and endangered count at this site
@@ -107,7 +106,7 @@ def get_gis_detections(
     results = []
 
     for det, obs, survey, site in rows:
-        lat, lon = coords_from_point(site.location)
+        lat, lon = site.latitude, site.longitude
         species_obj = None
         if det.species_id:
             species_obj = db.query(Species).filter(Species.id == det.species_id).first()
