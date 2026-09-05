@@ -46,7 +46,7 @@ logger = logging.getLogger("wildlife.detection")
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-CONFIDENCE_THRESHOLD: float = float(os.getenv("DETECTION_CONFIDENCE_THRESHOLD", "0.15"))
+CONFIDENCE_THRESHOLD: float = float(os.getenv("DETECTION_CONFIDENCE_THRESHOLD", "0.25"))
 
 _DEFAULT_WEIGHTS = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
@@ -69,34 +69,45 @@ _image_model: Any = None
 
 
 def _load_image_model() -> Optional[Any]:
-    """Load YOLOv8 model lazily; cache on first success."""
+    """
+    Load YOLOv8 model lazily; cache on first success.
+    When no custom model is found, automatically download and use yolov8n.pt.
+    """
     global _image_model
 
     if _image_model is not None:
         return _image_model
 
-    weights_to_try = []
-    if MODEL_WEIGHTS_PATH and os.path.isfile(MODEL_WEIGHTS_PATH):
-        weights_to_try.append(MODEL_WEIGHTS_PATH)
-    if os.path.isfile(_DEFAULT_WEIGHTS) and _DEFAULT_WEIGHTS not in weights_to_try:
-        weights_to_try.append(_DEFAULT_WEIGHTS)
-    if os.path.isfile("/app/models/best.pt") and "/app/models/best.pt" not in weights_to_try:
-        weights_to_try.append("/app/models/best.pt")
-    if "yolov8n.pt" not in weights_to_try:
-        weights_to_try.append("yolov8n.pt")
+    # Check for custom model weights first
+    custom_weights_to_try = []
+    if MODEL_WEIGHTS_PATH and os.path.isfile(MODEL_WEIGHTS_PATH) and os.path.basename(MODEL_WEIGHTS_PATH) != "yolov8n.pt":
+        custom_weights_to_try.append(MODEL_WEIGHTS_PATH)
+    if os.path.isfile(_DEFAULT_WEIGHTS) and _DEFAULT_WEIGHTS not in custom_weights_to_try:
+        custom_weights_to_try.append(_DEFAULT_WEIGHTS)
+    if os.path.isfile("/app/models/best.pt") and "/app/models/best.pt" not in custom_weights_to_try:
+        custom_weights_to_try.append("/app/models/best.pt")
 
     try:
         from ultralytics import YOLO  # type: ignore
-        for path in weights_to_try:
+
+        # 1. Try custom model if available
+        for path in custom_weights_to_try:
             try:
-                logger.info("Attempting to load YOLOv8 model from %s", path)
+                logger.info("Attempting to load custom YOLOv8 model from %s", path)
                 _image_model = YOLO(path)
-                logger.info("YOLOv8 model loaded successfully from %s.", path)
+                logger.info("Custom YOLOv8 model loaded successfully from %s.", path)
                 return _image_model
             except Exception as exc:
-                logger.warning("Failed to load YOLO model from %s: %s", path, exc)
+                logger.warning("Failed to load custom YOLO model from %s: %s", path, exc)
+
+        # 2. When no custom model is found, automatically download and use yolov8n.pt
+        logger.info("No custom model found; loading pre-trained YOLOv8 nano model (yolov8n.pt)...")
+        _image_model = YOLO("yolov8n.pt")
+        logger.info("Pre-trained YOLOv8 model (yolov8n.pt) loaded successfully.")
+        return _image_model
+
     except Exception as exc:
-        logger.warning("Could not import YOLO from ultralytics (%s). Running in demo fallback mode.", exc)
+        logger.warning("Could not load YOLO model from ultralytics: %s. Falling back to demo mode.", exc)
 
     return None
 
@@ -108,7 +119,7 @@ _classifier_model: Any = None
 _classifier_transforms: Any = None
 _imagenet_classes: List[str] = []
 
-# COCO animal class IDs (used to filter YOLO detections to animals only)
+# COCO animal class IDs (used to filter YOLO detections to wildlife-relevant animals only)
 _COCO_ANIMAL_CLASS_IDS = {
     14,  # bird
     15,  # cat
@@ -120,6 +131,15 @@ _COCO_ANIMAL_CLASS_IDS = {
     21,  # bear
     22,  # zebra
     23,  # giraffe
+}
+
+# Mapping of COCO class names to wildlife species database
+COCO_WILDLIFE_MAPPING: Dict[str, str] = {
+    "elephant": "Indian Elephant",
+    "bear": "Sloth Bear",
+    "bird": "Indian Peafowl",
+    "zebra": "Zebra (Equus quagga)",
+    "giraffe": "Giraffe",
 }
 
 
@@ -246,7 +266,12 @@ def run_image_detection(image_path: str) -> Any:
             if yolo_confidence < CONFIDENCE_THRESHOLD:
                 continue
             class_idx = int(box.cls[0])
+            # Only process wildlife-relevant animal classes
+            if class_idx not in _COCO_ANIMAL_CLASS_IDS:
+                continue
+
             yolo_label: str = result.names.get(class_idx, f"class_{class_idx}")
+            raw_coco_name = yolo_label.lower().strip()
 
             xyxy = box.xyxy[0].tolist()
             bbox = {
@@ -256,7 +281,12 @@ def run_image_detection(image_path: str) -> Any:
                 "y2": float(xyxy[3]),
             }
 
-            if class_idx in _COCO_ANIMAL_CLASS_IDS:
+            # Map COCO class names to wildlife species database
+            if raw_coco_name in COCO_WILDLIFE_MAPPING:
+                label = COCO_WILDLIFE_MAPPING[raw_coco_name]
+                confidence = yolo_confidence
+            elif raw_coco_name == "cat":
+                # For felines, attempt crop classification for wild big cats (tiger, leopard)
                 resnet_label, resnet_conf = _classify_crop(image_path, bbox)
                 if resnet_label != "unknown" and resnet_conf > 0.1:
                     label = resnet_label
@@ -265,6 +295,7 @@ def run_image_detection(image_path: str) -> Any:
                     label = yolo_label
                     confidence = yolo_confidence
             else:
+                # Any other animal -> create as detected class name
                 label = yolo_label
                 confidence = yolo_confidence
 
@@ -705,6 +736,12 @@ LABEL_SYNONYMS: Dict[str, str] = {
     "crow, caw, raven": "House Crow",
     "raven": "House Crow",
     "corvidae": "House Crow",
+
+    # COCO Wildlife Class Mappings
+    "bird": "Indian Peafowl",
+    "zebra": "Zebra (Equus quagga)",
+    "zebra (equus quagga)": "Zebra (Equus quagga)",
+    "giraffe": "Giraffe",
 }
 
 
