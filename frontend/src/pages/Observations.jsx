@@ -261,7 +261,7 @@ function Observations() {
       const dets = res.data;
       setDetectionMap(prev => ({ ...prev, [obs.id]: dets }));
       if (dets.length === 0) {
-        addToast("No species detected above confidence threshold (0.40).", "warning");
+        addToast("No species detected above confidence threshold (0.15).", "warning");
       } else {
         const src = dets[0]?.detection_source;
         const srcLabel = src ? ` via ${SOURCE_META[src]?.label ?? src}` : "";

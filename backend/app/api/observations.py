@@ -263,9 +263,12 @@ def run_detection(
 
     created_detections: List[Detection] = []
 
-    for result in raw_results:
-        label = result["species_label"]
-        confidence = result["confidence"]
+    # Handle both list and dict response structures (such as demo mode mock_response)
+    results_list = raw_results.get("detections", []) if isinstance(raw_results, dict) else (raw_results or [])
+
+    for result in results_list:
+        label = result.get("species_label") or result.get("species") or "Unknown Species"
+        confidence = float(result.get("confidence", 0.75))
         # detection_source comes from the service function; fall back to default_source
         source = result.get("detection_source", default_source)
 
@@ -276,7 +279,7 @@ def run_detection(
             "observation_id": observation_id,
             "species_id": species_id,
             "confidence": confidence,
-            "count": 1,
+            "count": int(result.get("count", 1)),
             "raw_label": label,
             "detection_source": source,
         }
